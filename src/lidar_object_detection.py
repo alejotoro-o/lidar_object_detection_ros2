@@ -2,6 +2,7 @@
 import rclpy
 from rclpy.node import Node
 
+from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
@@ -24,13 +25,15 @@ class LidarObjectDetectionNode(Node):
         dbscan_esp = self.get_parameter("dbscan_eps").get_parameter_value().double_value
 
         self.declare_parameter("dbscan_min_samples", 5)
-        dbscan_min_samples = self.get_parameter("dbscan_min_samples").get_parameter_value().double_value
+        dbscan_min_samples = self.get_parameter("dbscan_min_samples").get_parameter_value().integer_value
 
         self.declare_parameter("frame_id", "")
         self.frame_id = self.get_parameter("frame_id").get_parameter_value().string_value
 
         self.declare_parameter("lidar_frame_id", "laser_link")
         self.lidar_frame_id = self.get_parameter("lidar_frame_id").get_parameter_value().string_value
+        if self.frame_id == "":
+            self.frame_id = self.lidar_frame_id
 
         self.declare_parameter("lidar_angular_resolution", 0.00872665)
         self.lidar_ang_res = self.get_parameter('lidar_angular_resolution').get_parameter_value().double_value
@@ -64,7 +67,81 @@ class LidarObjectDetectionNode(Node):
                 self.ranges.append(range)
 
     def on_timer(self):
-        pass
+        
+        current_lidar_angle = 0
+        points_x = []
+        points_y = []
+
+        for range in self.ranges:
+
+            try:
+                t = self.tf_buffer.lookup_transform(
+                    self.frame_id,
+                    self.lidar_frame_id,
+                    rclpy.time.Time())
+            except TransformException as ex:
+                self.get_logger().info(
+                    f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
+                return
+            
+            r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
+            theta_r = r.as_rotvec()[-1]
+            
+            point_x = t.transform.translation.x + range*np.cos(theta_r + current_lidar_angle)
+            point_y = t.transform.translation.y + range*np.sin(theta_r + current_lidar_angle)
+
+            points_x.append(point_x)
+            points_y.append(point_y)
+            
+            current_lidar_angle += self.lidar_ang_res
+        
+        points_x = np.array(points_x).reshape((-1,1))
+        points_y = np.array(points_y).reshape((-1,1))
+
+        if points_x.shape[0] > 0 and points_y.shape[0] > 0:
+
+            lidar_data = np.concatenate((points_x,points_y),axis=1)
+
+            ## Clustering
+            labels = self.dbscan.fit_predict(lidar_data)
+
+            unique_labels = set(labels)
+            core_samples_mask = np.zeros_like(labels, dtype=bool)
+            core_samples_mask[self.dbscan.core_sample_indices_] = True
+
+            objects = ObjectsArray()
+            objects.header.frame_id = self.frame_id
+            objects.header.stamp = self.get_clock().now().to_msg()
+            objects.objects = []
+
+            for l in unique_labels:
+
+                class_member_mask = labels == l
+
+                xy = lidar_data[class_member_mask & core_samples_mask]
+
+                ## Obtain L-Shapes
+                if l != -1 and xy.shape[0] > 20:
+                    c1, theta, l1, l2 = self.cal_l_shape(xy)
+
+                    ## Rectangle center
+                    x_cent = c1[0] + (l1*np.cos(theta) - l2*np.sin(theta))/2
+                    y_cent = c1[1] + (l1*np.sin(theta) + l2*np.cos(theta))/2
+
+                    obj = Object()
+
+                    obj.id = int(l)
+                    obj.l_shape.c1.x = float(c1[0])
+                    obj.l_shape.c1.y = float(c1[1])
+                    obj.l_shape.theta = float(theta)
+                    obj.l_shape.l1 = float(l1)
+                    obj.l_shape.l2 = float(l2)
+                    obj.pose.x = float(x_cent)
+                    obj.pose.y = float(y_cent)
+
+                    objects.objects.append(obj)
+
+            self.objects_publisher.publish(objects)
 
     def variance_criterion(self, C1, C2):
 
