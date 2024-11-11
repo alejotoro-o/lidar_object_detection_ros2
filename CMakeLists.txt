@@ -23,7 +23,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Pose2D.msg"
   "msg/LShape.msg"
   "msg/Object.msg"
-  "msg/ObjectArray.msg"
+  "msg/ObjectsArray.msg"
   DEPENDENCIES std_msgs geometry_msgs sensor_msgs # Add packages that above messages depend on
 )
 
