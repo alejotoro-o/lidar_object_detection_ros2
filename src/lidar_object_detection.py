@@ -87,8 +87,8 @@ class LidarObjectDetectionNode(Node):
 
             try:
                 t = self.tf_buffer.lookup_transform(
-                    self.lidar_frame_id,
                     self.frame_id,
+                    self.lidar_frame_id,
                     rclpy.time.Time())
             except TransformException as ex:
                 self.get_logger().info(
@@ -98,8 +98,8 @@ class LidarObjectDetectionNode(Node):
             r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
             theta_r = r.as_rotvec()[-1]
             
-            point_x = t.transform.translation.x + range*np.cos(theta_r - self.flip_x_axis*current_lidar_angle)
-            point_y = t.transform.translation.y + range*np.sin(theta_r - self.flip_x_axis*current_lidar_angle)
+            point_x = t.transform.translation.x + self.flip_x_axis*range*np.cos(theta_r - current_lidar_angle)
+            point_y = t.transform.translation.y + range*np.sin(theta_r - current_lidar_angle)
             
             points_x.append(point_x)
             points_y.append(point_y)

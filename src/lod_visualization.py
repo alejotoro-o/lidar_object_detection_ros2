@@ -60,8 +60,8 @@ class PlotLidar(Node):
 
         if len(self.lidar_points) > 0:
 
-            self.lidar_points = np.array(self.lidar_points)
-            self.ax.scatter(self.lidar_points[:,0], self.lidar_points[:,1], s=2, c="b")
+            lidar_points = np.array(self.lidar_points)
+            self.ax.scatter(lidar_points[:,0], lidar_points[:,1], s=2, c="b")
 
             colors = [plt.cm.Spectral(each) for each in np.linspace(0, 1, len(self.objects.objects))]
 
