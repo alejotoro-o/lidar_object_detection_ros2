@@ -2,11 +2,13 @@
 import rclpy
 from rclpy.node import Node
 
-from sensor_msgs.msg import LaserScan
+from tf2_ros import TransformException
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+
 from lidar_object_detection_ros2.msg import ObjectsArray, ScanClusters
 
 import numpy as np
-from sklearn.cluster import DBSCAN
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.animation as anim
@@ -30,6 +32,10 @@ class PlotLidar(Node):
         self.labels = []
         self.create_subscription(ObjectsArray, "lod_objects", self.lod_objects_callback, 10)
         self.create_subscription(ScanClusters, "lod_clusters", self.lod_clusters_callback, 10)
+
+        ## TF Listener
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.fig, self.ax = plt.subplots()
         self.ax.autoscale(False)
@@ -60,9 +66,28 @@ class PlotLidar(Node):
 
         if len(self.lidar_points) > 0:
 
+            ## Plot Frames
+            # arrow = matplotlib.patches.Arrow(0, 0, 0.1, 0, color="r")
+            # self.ax.add_patch(arrow)
+
+            # try:
+            #     t = self.tf_buffer.lookup_transform(
+            #         self.frame_id,
+            #         self.lidar_frame_id,
+            #         rclpy.time.Time())
+            # except TransformException as ex:
+            #     self.get_logger().info(
+            #         f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
+            #     return
+            
+            # r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
+            # theta_r = r.as_rotvec()[-1]
+
+            ## Plot Lidar Points
             lidar_points = np.array(self.lidar_points)
             self.ax.scatter(lidar_points[:,0], lidar_points[:,1], s=2, c="b")
 
+            ## Plot Rectangles
             colors = [plt.cm.Spectral(each) for each in np.linspace(0, 1, len(self.objects.objects))]
 
             for obj, col in zip(self.objects.objects, colors):

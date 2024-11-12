@@ -45,6 +45,16 @@ class LidarObjectDetectionNode(Node):
         flip_x_axis = self.get_parameter("flip_x_axis").get_parameter_value().bool_value
         self.flip_x_axis = -1 if flip_x_axis else 1
 
+        self.declare_parameter("flip_y_axis", False)
+        flip_y_axis = self.get_parameter("flip_y_axis").get_parameter_value().bool_value
+        self.flip_y_axis = -1 if flip_y_axis else 1
+
+        self.declare_parameter("min_l", 0.05)
+        self.min_l = self.get_parameter('min_l').get_parameter_value().double_value
+
+        self.declare_parameter("max_l", 1.0)
+        self.max_l = self.get_parameter('max_l').get_parameter_value().double_value
+
         ## Variables
         self.ranges = []
         self.dbscan = DBSCAN(eps=dbscan_esp, min_samples=dbscan_min_samples)
@@ -97,9 +107,9 @@ class LidarObjectDetectionNode(Node):
             
             r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
             theta_r = r.as_rotvec()[-1]
-            
+
             point_x = t.transform.translation.x + self.flip_x_axis*range*np.cos(theta_r - current_lidar_angle)
-            point_y = t.transform.translation.y + range*np.sin(theta_r - current_lidar_angle)
+            point_y = t.transform.translation.y + self.flip_y_axis*range*np.sin(theta_r - current_lidar_angle)
             
             points_x.append(point_x)
             points_y.append(point_y)
@@ -140,24 +150,26 @@ class LidarObjectDetectionNode(Node):
                 xy = lidar_data[class_member_mask & core_samples_mask]
 
                 ## Obtain L-Shapes
-                if l != -1 and xy.shape[0] > 20:
+                if l != -1:
                     c1, theta, l1, l2 = self.cal_l_shape(xy)
+                    
+                    if l1 > self.min_l and l1 < self.max_l and l2 > self.min_l and l2 < self.max_l:
 
-                    ## Rectangle center
-                    x_cent = c1[0] + (l1*np.cos(theta) - l2*np.sin(theta))/2
-                    y_cent = c1[1] + (l1*np.sin(theta) + l2*np.cos(theta))/2
+                        ## Rectangle center
+                        x_cent = c1[0] + (l1*np.cos(theta) - l2*np.sin(theta))/2
+                        y_cent = c1[1] + (l1*np.sin(theta) + l2*np.cos(theta))/2
 
-                    obj = Object()
-                    obj.id = int(l)
-                    obj.l_shape.c1.x = float(c1[0])
-                    obj.l_shape.c1.y = float(c1[1])
-                    obj.l_shape.theta = float(theta)
-                    obj.l_shape.l1 = float(l1)
-                    obj.l_shape.l2 = float(l2)
-                    obj.pose.x = float(x_cent)
-                    obj.pose.y = float(y_cent)
+                        obj = Object()
+                        obj.id = int(l)
+                        obj.l_shape.c1.x = float(c1[0])
+                        obj.l_shape.c1.y = float(c1[1])
+                        obj.l_shape.theta = float(theta)
+                        obj.l_shape.l1 = float(l1)
+                        obj.l_shape.l2 = float(l2)
+                        obj.pose.x = float(x_cent)
+                        obj.pose.y = float(y_cent)
 
-                    objects.objects.append(obj)
+                        objects.objects.append(obj)
 
             self.clusters_publisher.publish(clusters)
             self.objects_publisher.publish(objects)
