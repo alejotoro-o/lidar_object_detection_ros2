@@ -21,15 +21,26 @@ class PlotLidar(Node):
 
         super().__init__('plot_lidar')
 
-        self.declare_parameter("x_lim", 5.0)
-        self.declare_parameter("y_lim", 5.0)
-        self.x_lim = self.get_parameter('x_lim').get_parameter_value().double_value
-        self.y_lim = self.get_parameter('y_lim').get_parameter_value().double_value
+        ## Parameters
+        self.declare_parameter("x_lims", [-5.0,5.0])
+        self.declare_parameter("y_lims", [-5.0,5.0])
+        self.x_lims = self.get_parameter('x_lims').get_parameter_value().double_array_value
+        self.y_lims = self.get_parameter('y_lims').get_parameter_value().double_array_value
 
+        self.declare_parameter("frame_id", "")
+        self.frame_id = self.get_parameter("frame_id").get_parameter_value().string_value
+        self.declare_parameter("lidar_frame_id", "laser_link")
+        self.lidar_frame_id = self.get_parameter("lidar_frame_id").get_parameter_value().string_value
+        if self.frame_id == "":
+            self.frame_id = self.lidar_frame_id
+
+        ## Variables
         self.objects = ObjectsArray()
         self.ranges = []
         self.lidar_points = []
         self.labels = []
+
+        ## Subscriptions
         self.create_subscription(ObjectsArray, "lod_objects", self.lod_objects_callback, 10)
         self.create_subscription(ScanClusters, "lod_clusters", self.lod_clusters_callback, 10)
 
@@ -39,8 +50,8 @@ class PlotLidar(Node):
 
         self.fig, self.ax = plt.subplots()
         self.ax.autoscale(False)
-        self.ax.set_xlim(-self.x_lim,self.x_lim)
-        self.ax.set_ylim(-self.y_lim,self.y_lim)
+        self.ax.set_xlim(self.x_lims[0],self.x_lims[1])
+        self.ax.set_ylim(self.y_lims[0],self.y_lims[1])
 
     def lod_clusters_callback(self, clusters_msg):
 
@@ -61,27 +72,34 @@ class PlotLidar(Node):
         ## Plot Data
         self.ax.clear()
         self.ax.autoscale(False)
-        self.ax.set_xlim(-self.x_lim,self.x_lim)
-        self.ax.set_ylim(-self.y_lim,self.y_lim)
+        self.ax.set_xlim(self.x_lims[0],self.x_lims[1])
+        self.ax.set_ylim(self.y_lims[0],self.y_lims[1])
 
         if len(self.lidar_points) > 0:
 
             ## Plot Frames
-            # arrow = matplotlib.patches.Arrow(0, 0, 0.1, 0, color="r")
-            # self.ax.add_patch(arrow)
+            arrow = matplotlib.patches.Arrow(0, 0, 0.15, 0, width=0.1, color="r")
+            self.ax.add_patch(arrow)
+            arrow = matplotlib.patches.Arrow(0, 0, 0, 0.15, width=0.1, color="g")
+            self.ax.add_patch(arrow)
 
-            # try:
-            #     t = self.tf_buffer.lookup_transform(
-            #         self.frame_id,
-            #         self.lidar_frame_id,
-            #         rclpy.time.Time())
-            # except TransformException as ex:
-            #     self.get_logger().info(
-            #         f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
-            #     return
+            try:
+                t = self.tf_buffer.lookup_transform(
+                    self.frame_id,
+                    self.lidar_frame_id,
+                    rclpy.time.Time())
+            except TransformException as ex:
+                self.get_logger().info(
+                    f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
+                return
             
-            # r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
-            # theta_r = r.as_rotvec()[-1]
+            r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
+            theta_r = r.as_rotvec()[-1]
+
+            arrow = matplotlib.patches.Arrow(t.transform.translation.x, t.transform.translation.y,0.15*np.cos(theta_r),0.15*np.sin(theta_r), width=0.1, color="r")
+            self.ax.add_patch(arrow)
+            arrow = matplotlib.patches.Arrow(t.transform.translation.x, t.transform.translation.y, 0.15*np.cos(theta_r + np.pi/2), 0.15*np.sin(theta_r + np.pi/2), width=0.1, color="g")
+            self.ax.add_patch(arrow)
 
             ## Plot Lidar Points
             lidar_points = np.array(self.lidar_points)
