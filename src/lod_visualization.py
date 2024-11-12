@@ -118,7 +118,7 @@ class PlotLidar(Node):
 
     def _plt(self):
             
-        self.ani = anim.FuncAnimation(self.fig, self.update_plot, interval=10)
+        self.ani = anim.FuncAnimation(self.fig, self.update_plot, interval=10, cache_frame_data=False)
         plt.show()
 
         
