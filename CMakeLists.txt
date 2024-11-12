@@ -24,11 +24,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/LShape.msg"
   "msg/Object.msg"
   "msg/ObjectsArray.msg"
+  "msg/ScanClusters.msg"
   DEPENDENCIES std_msgs geometry_msgs sensor_msgs # Add packages that above messages depend on
 )
 
 install(PROGRAMS
   src/lidar_object_detection.py
+  src/lod_visualization.py
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)

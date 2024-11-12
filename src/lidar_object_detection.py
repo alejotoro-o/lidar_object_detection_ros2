@@ -8,7 +8,7 @@ from tf2_ros.transform_listener import TransformListener
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from sensor_msgs.msg import LaserScan
-from lidar_object_detection_ros2.msg import Object, ObjectsArray
+from lidar_object_detection_ros2.msg import Pose2D, Object, ObjectsArray, ScanClusters
 
 import numpy as np
 from sklearn.cluster import DBSCAN
@@ -41,6 +41,10 @@ class LidarObjectDetectionNode(Node):
         self.declare_parameter("update_rate", 0.1)
         update_rate = self.get_parameter('update_rate').get_parameter_value().double_value
 
+        self.declare_parameter("flip_x_axis", False)
+        flip_x_axis = self.get_parameter("flip_x_axis").get_parameter_value().bool_value
+        self.flip_x_axis = -1 if flip_x_axis else 1
+
         ## Variables
         self.ranges = []
         self.dbscan = DBSCAN(eps=dbscan_esp, min_samples=dbscan_min_samples)
@@ -53,6 +57,7 @@ class LidarObjectDetectionNode(Node):
         self.create_subscription(LaserScan, "scan", self.scan_callback, 10)
 
         ## Publishers
+        self.clusters_publisher = self.create_publisher(ScanClusters, "lod_clusters", 10)
         self.objects_publisher = self.create_publisher(ObjectsArray, "lod_objects", 10)
 
         ## Timer
@@ -72,12 +77,18 @@ class LidarObjectDetectionNode(Node):
         points_x = []
         points_y = []
 
+        clusters = ScanClusters()
+        clusters.header.frame_id = self.frame_id
+        clusters.header.stamp = self.get_clock().now().to_msg()
+        clusters.points = []
+        clusters.labels = []
+
         for range in self.ranges:
 
             try:
                 t = self.tf_buffer.lookup_transform(
-                    self.frame_id,
                     self.lidar_frame_id,
+                    self.frame_id,
                     rclpy.time.Time())
             except TransformException as ex:
                 self.get_logger().info(
@@ -87,13 +98,19 @@ class LidarObjectDetectionNode(Node):
             r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
             theta_r = r.as_rotvec()[-1]
             
-            point_x = t.transform.translation.x + range*np.cos(theta_r + current_lidar_angle)
-            point_y = t.transform.translation.y + range*np.sin(theta_r + current_lidar_angle)
-
+            point_x = t.transform.translation.x + range*np.cos(theta_r - self.flip_x_axis*current_lidar_angle)
+            point_y = t.transform.translation.y + range*np.sin(theta_r - self.flip_x_axis*current_lidar_angle)
+            
             points_x.append(point_x)
             points_y.append(point_y)
             
             current_lidar_angle += self.lidar_ang_res
+
+            point = Pose2D()
+            point.x = point_x
+            point.y = point_y
+
+            clusters.points.append(point)
         
         points_x = np.array(points_x).reshape((-1,1))
         points_y = np.array(points_y).reshape((-1,1))
@@ -104,6 +121,8 @@ class LidarObjectDetectionNode(Node):
 
             ## Clustering
             labels = self.dbscan.fit_predict(lidar_data)
+         
+            clusters.labels = labels.tolist()
 
             unique_labels = set(labels)
             core_samples_mask = np.zeros_like(labels, dtype=bool)
@@ -129,7 +148,6 @@ class LidarObjectDetectionNode(Node):
                     y_cent = c1[1] + (l1*np.sin(theta) + l2*np.cos(theta))/2
 
                     obj = Object()
-
                     obj.id = int(l)
                     obj.l_shape.c1.x = float(c1[0])
                     obj.l_shape.c1.y = float(c1[1])
@@ -141,6 +159,7 @@ class LidarObjectDetectionNode(Node):
 
                     objects.objects.append(obj)
 
+            self.clusters_publisher.publish(clusters)
             self.objects_publisher.publish(objects)
 
     def variance_criterion(self, C1, C2):
