@@ -16,7 +16,7 @@ def generate_launch_description():
         parameters=[
             {"dbscan_eps": 0.2},
             {"dbscan_min_samples": 5},
-            {"lidar_angular_resolution": 0.00872665},
+            {"lidar_angular_resolution": 0.5},
             {"frame_id": "map"},
             {"lidar_frame_id": "lidar"},
             {"flip_x_axis": True},

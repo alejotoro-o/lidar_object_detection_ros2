@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 import rclpy
+import rclpy.duration
 from rclpy.node import Node
 
-import rclpy.time
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
-from geometry_msgs.msg import PoseWithCovarianceStamped
 from sensor_msgs.msg import LaserScan
 from lidar_object_detection_ros2.msg import Pose2D, Object, ObjectsArray, ScanClusters
 
@@ -36,8 +35,8 @@ class LidarObjectDetectionNode(Node):
         if self.frame_id == "":
             self.frame_id = self.lidar_frame_id
 
-        self.declare_parameter("lidar_angular_resolution", 0.00872665)
-        self.lidar_ang_res = self.get_parameter('lidar_angular_resolution').get_parameter_value().double_value
+        self.declare_parameter("lidar_angular_resolution", 0.5)
+        self.lidar_ang_res = np.deg2rad(self.get_parameter('lidar_angular_resolution').get_parameter_value().double_value)
 
         self.declare_parameter("update_rate", 0.1)
         update_rate = self.get_parameter('update_rate').get_parameter_value().double_value

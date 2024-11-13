@@ -4,13 +4,9 @@ This package provides a way of detecting both static and dynamic objects with a 
 
 The following two images present a webots simulation and the plot of the output of the lidar_object_detection_ros2 package.
 
-<img src="images/webots.png" width="50%">
+![Lidar Object Detection Demo](images/lidar_object_detection_demo.gif)
 
-*Webots Simulation.* 
-
-<img src="images/lod.png" width="50%">
-
-*Lidar Object Detection Visualization.*
+*Lidar Object Detection demo using a simulated environment in WEBOTS.*
 
 ## Overview
 
