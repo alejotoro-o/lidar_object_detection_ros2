@@ -2,6 +2,7 @@
 import rclpy
 from rclpy.node import Node
 
+import rclpy.time
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
@@ -84,8 +85,7 @@ class LidarObjectDetectionNode(Node):
     def on_timer(self):
         
         current_lidar_angle = 0
-        points_x = []
-        points_y = []
+        points = []
 
         clusters = ScanClusters()
         clusters.header.frame_id = self.frame_id
@@ -93,42 +93,36 @@ class LidarObjectDetectionNode(Node):
         clusters.points = []
         clusters.labels = []
 
-        for range in self.ranges:
+        try:
+            t = self.tf_buffer.lookup_transform(
+                self.frame_id,
+                self.lidar_frame_id,
+                rclpy.time.Time())
+        except TransformException as ex:
+            self.get_logger().info(
+                f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
+            return
+        
+        r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
+        theta_r = r.as_rotvec()[-1]
 
-            try:
-                t = self.tf_buffer.lookup_transform(
-                    self.frame_id,
-                    self.lidar_frame_id,
-                    rclpy.time.Time())
-            except TransformException as ex:
-                self.get_logger().info(
-                    f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
-                return
-            
-            r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
-            theta_r = r.as_rotvec()[-1]
+        for range in self.ranges:
 
             point_x = t.transform.translation.x + self.flip_x_axis*range*np.cos(theta_r - current_lidar_angle)
             point_y = t.transform.translation.y + self.flip_y_axis*range*np.sin(theta_r - current_lidar_angle)
-            
-            points_x.append(point_x)
-            points_y.append(point_y)
-            
-            current_lidar_angle += self.lidar_ang_res
 
             point = Pose2D()
             point.x = point_x
             point.y = point_y
-
             clusters.points.append(point)
-        
-        points_x = np.array(points_x).reshape((-1,1))
-        points_y = np.array(points_y).reshape((-1,1))
+            points.append([point.x, point.y])
+            
+            current_lidar_angle += self.lidar_ang_res
 
-        if points_x.shape[0] > 0 and points_y.shape[0] > 0:
-
-            lidar_data = np.concatenate((points_x,points_y),axis=1)
-
+        if len(points) > 0:
+            
+            lidar_data = np.array(points)
+            
             ## Clustering
             labels = self.dbscan.fit_predict(lidar_data)
          

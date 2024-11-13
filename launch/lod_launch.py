@@ -14,14 +14,14 @@ def generate_launch_description():
         package="lidar_object_detection_ros2",
         executable="lidar_object_detection.py",
         parameters=[
-            {"dbscan_eps": 0.1},
+            {"dbscan_eps": 0.2},
             {"dbscan_min_samples": 5},
             {"lidar_angular_resolution": 0.00872665},
             {"frame_id": "map"},
             {"lidar_frame_id": "lidar"},
             {"flip_x_axis": True},
             {"flip_y_axis": True},
-            {"update_rate": 0.05},
+            {"update_rate": 0.2},
             {"min_l": 0.05},
             {"max_l": 1.0}
         ],
@@ -32,8 +32,8 @@ def generate_launch_description():
         package="lidar_object_detection_ros2",
         executable="lod_visualization.py",
         parameters=[
-            {"x_lims": [-2.0,10.0]},
-            {"y_lims": [-5.0,5.0]},
+            {"x_lims": [-4.0,4.0]},
+            {"y_lims": [-3.0,3.0]},
             {"frame_id": "map"},
             {"lidar_frame_id": "lidar"},
         ]
