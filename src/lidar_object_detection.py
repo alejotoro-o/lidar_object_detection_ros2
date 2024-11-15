@@ -61,7 +61,7 @@ class LidarObjectDetectionNode(Node):
 
         ## TF Listener
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
 
         ## Subscriptions
         self.create_subscription(LaserScan, "scan", self.scan_callback, 10)
@@ -72,14 +72,12 @@ class LidarObjectDetectionNode(Node):
 
         ## Timer
         self.timer = self.create_timer(update_rate, self.on_timer)
+        self.scan_time = rclpy.time.Time()
         
     def scan_callback(self, scan_msg):
         
-        self.ranges = []
-
-        for range in scan_msg.ranges:       
-            if range != float("+inf"):
-                self.ranges.append(range)
+        self.scan_time = rclpy.time.Time(seconds=scan_msg.header.stamp.sec, nanoseconds=scan_msg.header.stamp.nanosec)
+        self.ranges = scan_msg.ranges
 
     def on_timer(self):
         
@@ -96,10 +94,9 @@ class LidarObjectDetectionNode(Node):
             t = self.tf_buffer.lookup_transform(
                 self.frame_id,
                 self.lidar_frame_id,
-                rclpy.time.Time())
+                self.scan_time)
         except TransformException as ex:
-            self.get_logger().info(
-                f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
+            self.get_logger().info(f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
             return
         
         r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
@@ -107,14 +104,16 @@ class LidarObjectDetectionNode(Node):
 
         for range in self.ranges:
 
-            point_x = t.transform.translation.x + self.flip_x_axis*range*np.cos(theta_r - current_lidar_angle)
-            point_y = t.transform.translation.y + self.flip_y_axis*range*np.sin(theta_r - current_lidar_angle)
+            if range != float("+inf"):
+                
+                point_x = t.transform.translation.x + self.flip_x_axis*range*np.cos(theta_r - current_lidar_angle)
+                point_y = t.transform.translation.y + self.flip_y_axis*range*np.sin(theta_r - current_lidar_angle)
 
-            point = Pose2D()
-            point.x = point_x
-            point.y = point_y
-            clusters.points.append(point)
-            points.append([point.x, point.y])
+                point = Pose2D()
+                point.x = point_x
+                point.y = point_y
+                clusters.points.append(point)
+                points.append([point.x, point.y])
             
             current_lidar_angle += self.lidar_ang_res
 
