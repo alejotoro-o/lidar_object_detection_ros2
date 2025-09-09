@@ -32,8 +32,8 @@ def generate_launch_description():
         package="lidar_object_detection_ros2",
         executable="lod_visualization.py",
         parameters=[
-            {"x_lims": [-4.0,4.0]},
-            {"y_lims": [-3.0,3.0]},
+            {"x_lims": [-3.0,3.0]},
+            {"y_lims": [-2.0,2.0]},
             {"frame_id": "map"},
             {"lidar_frame_id": "lidar"},
         ]

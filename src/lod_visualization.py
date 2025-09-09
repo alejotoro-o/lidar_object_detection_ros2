@@ -72,7 +72,9 @@ class PlotLidar(Node):
         ## Plot Data
         self.ax.clear()
         self.ax.autoscale(False)
+        self.ax.set_xlabel('x [m]')
         self.ax.set_xlim(self.x_lims[0],self.x_lims[1])
+        self.ax.set_ylabel('y [m]')
         self.ax.set_ylim(self.y_lims[0],self.y_lims[1])
         self.ax.grid()
         plt.tight_layout()
@@ -112,7 +114,7 @@ class PlotLidar(Node):
 
             for obj, col in zip(self.objects.objects, colors):
    
-                rect = matplotlib.patches.Rectangle((obj.l_shape.c1.x, obj.l_shape.c1.y), obj.l_shape.l1, obj.l_shape.l2, np.rad2deg(obj.l_shape.theta), color = col, fill = False, lw=2)
+                rect = matplotlib.patches.Rectangle((obj.l_shape.c1.x, obj.l_shape.c1.y), obj.l_shape.l1, obj.l_shape.l2, angle=np.rad2deg(obj.l_shape.theta), color = col, fill = False, lw=2)
                 self.ax.add_patch(rect)
                 self.ax.scatter([obj.pose.x], [obj.pose.y], s=10, c="r", marker="x")
 
