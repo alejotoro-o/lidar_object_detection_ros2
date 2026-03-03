@@ -8,6 +8,7 @@ from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
 from sensor_msgs.msg import LaserScan
+from visualization_msgs.msg import Marker, MarkerArray
 from lidar_object_detection_ros2.msg import Pose2D, Object, ObjectsArray, ScanClusters
 
 import numpy as np
@@ -69,6 +70,7 @@ class LidarObjectDetectionNode(Node):
         ## Publishers
         self.clusters_publisher = self.create_publisher(ScanClusters, "lod_clusters", 10)
         self.objects_publisher = self.create_publisher(ObjectsArray, "lod_objects", 10)
+        self.marker_publisher = self.create_publisher(MarkerArray, "lod_markers", 10)
 
         ## Timer
         self.timer = self.create_timer(update_rate, self.on_timer)
@@ -91,16 +93,24 @@ class LidarObjectDetectionNode(Node):
         clusters.labels = []
 
         try:
+            # Add a timeout (duration) to wait for the transform to become available
             t = self.tf_buffer.lookup_transform(
                 self.frame_id,
                 self.lidar_frame_id,
-                self.scan_time)
+                self.scan_time,
+                timeout=rclpy.duration.Duration(seconds=0.1) # <--- Add this
+            )
         except TransformException as ex:
-            self.get_logger().info(f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
+            # Changed to warn to avoid spamming info if it's just a slight delay
+            self.get_logger().warning(f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
             return
         
-        r = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w])
-        theta_r = r.as_rotvec()[-1]
+        theta_r = self._get_theta_from_quaternion(
+            t.transform.rotation.x, 
+            t.transform.rotation.y, 
+            t.transform.rotation.z, 
+            t.transform.rotation.w
+        )
 
         for range in self.ranges:
 
@@ -165,6 +175,10 @@ class LidarObjectDetectionNode(Node):
 
             self.clusters_publisher.publish(clusters)
             self.objects_publisher.publish(objects)
+
+            if len(objects.objects) > 0:
+                marker_array = self._get_marker_array(objects)
+                self.marker_publisher.publish(marker_array)
 
     def variance_criterion(self, C1, C2):
 
@@ -248,6 +262,91 @@ class LidarObjectDetectionNode(Node):
         l2 = c4 - c2
 
         return (x1,y1), theta_star, l1, l2
+    
+    ###############
+    ## Utilities ##
+    ###############
+    def _get_theta_from_quaternion(self, x, y, z, w):
+        """
+        Extracts the yaw (rotation around Z-axis) from a 3D quaternion.
+        Used for processing TF transforms.
+        """
+        r = R.from_quat([x, y, z, w])
+        # The last element of the rotvec is the rotation around the Z axis
+        return r.as_rotvec()[-1]
+
+    def _get_quaternion_from_theta(self, theta):
+        """
+        Converts a 2D yaw angle (theta) into a 4D quaternion [x, y, z, w].
+        Used for publishing RViz Markers.
+        """
+        # Create rotation around Z-axis
+        r = R.from_rotvec([0.0, 0.0, float(theta)])
+
+        return r.as_quat()
+    
+    def _get_marker_array(self, objects_msg):
+        marker_array = MarkerArray()
+        
+        for obj in objects_msg.objects:
+            # 1. Bounding Box Marker (CUBE)
+            bbox_marker = Marker()
+            bbox_marker.header = objects_msg.header
+            bbox_marker.ns = "bounding_boxes"
+            bbox_marker.id = obj.id
+            bbox_marker.type = Marker.CUBE
+            bbox_marker.action = Marker.ADD
+            
+            # Position
+            bbox_marker.pose.position.x = obj.pose.x
+            bbox_marker.pose.position.y = obj.pose.y
+            bbox_marker.pose.position.z = 0.1  # Slightly above ground
+            
+            # Orientation using our utility
+            q = self._get_quaternion_from_theta(obj.l_shape.theta)
+            bbox_marker.pose.orientation.x = q[0]
+            bbox_marker.pose.orientation.y = q[1]
+            bbox_marker.pose.orientation.z = q[2]
+            bbox_marker.pose.orientation.w = q[3]
+            
+            # Scale (l1 and l2 from L-shape)
+            bbox_marker.scale.x = obj.l_shape.l1
+            bbox_marker.scale.y = obj.l_shape.l2
+            bbox_marker.scale.z = 0.2 # Thickness of the box
+            
+            # Color (Semi-transparent green)
+            bbox_marker.color.r = 0.0
+            bbox_marker.color.g = 1.0
+            bbox_marker.color.b = 0.0
+            bbox_marker.color.a = 0.5
+            
+            bbox_marker.lifetime = rclpy.duration.Duration(seconds=0.2).to_msg()
+            marker_array.markers.append(bbox_marker)
+
+            # 2. ID Label Marker (TEXT)
+            text_marker = Marker()
+            text_marker.header = objects_msg.header
+            text_marker.ns = "object_ids"
+            text_marker.id = obj.id
+            text_marker.type = Marker.TEXT_VIEW_FACING
+            text_marker.action = Marker.ADD
+            
+            text_marker.pose.position.x = obj.pose.x
+            text_marker.pose.position.y = obj.pose.y
+            text_marker.pose.position.z = 0.5 # Float above the box
+            
+            text_marker.scale.z = 0.2 # Text height
+            text_marker.text = f"ID: {obj.id}"
+            
+            text_marker.color.r = 1.0
+            text_marker.color.g = 1.0
+            text_marker.color.b = 1.0
+            text_marker.color.a = 1.0
+            
+            text_marker.lifetime = rclpy.duration.Duration(seconds=0.2).to_msg()
+            marker_array.markers.append(text_marker)
+            
+        return marker_array
 
 def main(args=None):
 

@@ -28,18 +28,18 @@ def generate_launch_description():
         output="screen",
     )
 
-    lod_visualization = Node(
-        package="lidar_object_detection_ros2",
-        executable="lod_visualization.py",
-        parameters=[
-            {"x_lims": [-3.0,3.0]},
-            {"y_lims": [-2.0,2.0]},
-            {"frame_id": "map"},
-            {"lidar_frame_id": "lidar"},
-        ]
-    )
+    # lod_visualization = Node(
+    #     package="lidar_object_detection_ros2",
+    #     executable="lod_visualization.py",
+    #     parameters=[
+    #         {"x_lims": [-3.0,3.0]},
+    #         {"y_lims": [-2.0,2.0]},
+    #         {"frame_id": "map"},
+    #         {"lidar_frame_id": "lidar"},
+    #     ]
+    # )
 
     return LaunchDescription([
         lidar_object_detection,
-        lod_visualization
+        # lod_visualization
     ])

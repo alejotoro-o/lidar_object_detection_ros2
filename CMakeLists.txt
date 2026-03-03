@@ -18,6 +18,7 @@ find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Pose2D.msg"
@@ -25,7 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Object.msg"
   "msg/ObjectsArray.msg"
   "msg/ScanClusters.msg"
-  DEPENDENCIES std_msgs geometry_msgs sensor_msgs # Add packages that above messages depend on
+  DEPENDENCIES std_msgs geometry_msgs sensor_msgs visualization_msgs
 )
 
 install(PROGRAMS
