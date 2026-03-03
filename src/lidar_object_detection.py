@@ -14,6 +14,7 @@ from lidar_object_detection_ros2.msg import Pose2D, Object, ObjectsArray, ScanCl
 import numpy as np
 from sklearn.cluster import DBSCAN
 from scipy.spatial.transform import Rotation as R
+from scipy.optimize import linear_sum_assignment
 
 class LidarObjectDetectionNode(Node):
 
@@ -59,6 +60,12 @@ class LidarObjectDetectionNode(Node):
         ## Variables
         self.ranges = []
         self.dbscan = DBSCAN(eps=dbscan_esp, min_samples=dbscan_min_samples)
+
+        ## Cluster asociation
+        self.tracked_objects = {}  # {id: {"corner": [x, y], "age": 0}}
+        self.next_id = 0
+        self.max_disappeared = 6   # Slightly higher to handle noise
+        self.max_distance = 0.8    # Max distance the corner can move between scans
 
         ## TF Listener
         self.tf_buffer = Buffer()
@@ -172,6 +179,8 @@ class LidarObjectDetectionNode(Node):
                         obj.pose.y = float(y_cent)
 
                         objects.objects.append(obj)
+
+            objects.objects = self._associate_clusters(objects.objects)
 
             self.clusters_publisher.publish(clusters)
             self.objects_publisher.publish(objects)
@@ -347,6 +356,66 @@ class LidarObjectDetectionNode(Node):
             marker_array.markers.append(text_marker)
             
         return marker_array
+    
+    def _associate_clusters(self, current_objects):
+        if not current_objects:
+            # Increment age for all tracked objects if no new detections
+            for tid in list(self.tracked_objects.keys()):
+                self.tracked_objects[tid]["age"] += 1
+                if self.tracked_objects[tid]["age"] > self.max_disappeared:
+                    del self.tracked_objects[tid]
+            return current_objects
+
+        # Extract new corners
+        new_corners = np.array([[obj.l_shape.c1.x, obj.l_shape.c1.y] for obj in current_objects])
+        
+        tracked_ids = list(self.tracked_objects.keys())
+        if not tracked_ids:
+            # Register all as new
+            for i, obj in enumerate(current_objects):
+                obj.id = self._register_object(new_corners[i])
+            return current_objects
+
+        tracked_corners = np.array([self.tracked_objects[tid]["corner"] for tid in tracked_ids])
+
+        # Distance matrix between old corners and new corners
+        dist_matrix = np.linalg.norm(tracked_corners[:, np.newaxis] - new_corners, axis=2)
+
+        # Hungarian Algorithm for optimal assignment
+        row_ind, col_ind = linear_sum_assignment(dist_matrix)
+
+        assigned_new_indices = set()
+        assigned_track_indices = set()
+
+        for r, c in zip(row_ind, col_ind):
+            # Only associate if the corner hasn't jumped too far
+            if dist_matrix[r, c] < self.max_distance:
+                tid = tracked_ids[r]
+                current_objects[c].id = tid
+                self.tracked_objects[tid]["corner"] = new_corners[c]
+                self.tracked_objects[tid]["age"] = 0
+                assigned_track_indices.add(r)
+                assigned_new_indices.add(c)
+
+        # Clean up lost tracks
+        for r, tid in enumerate(tracked_ids):
+            if r not in assigned_track_indices:
+                self.tracked_objects[tid]["age"] += 1
+                if self.tracked_objects[tid]["age"] > self.max_disappeared:
+                    del self.tracked_objects[tid]
+
+        # Register brand new objects
+        for c in range(len(new_corners)):
+            if c not in assigned_new_indices:
+                current_objects[c].id = self._register_object(new_corners[c])
+
+        return current_objects
+
+    def _register_object(self, corner):
+        new_id = self.next_id
+        self.tracked_objects[new_id] = {"corner": corner, "age": 0}
+        self.next_id += 1
+        return new_id
 
 def main(args=None):
 

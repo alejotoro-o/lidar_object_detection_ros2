@@ -31,7 +31,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 install(PROGRAMS
   src/lidar_object_detection.py
-  src/lod_visualization.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY
