@@ -7,14 +7,17 @@ from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
+from geometry_msgs.msg import Pose2D, Twist
 from sensor_msgs.msg import LaserScan
 from visualization_msgs.msg import Marker, MarkerArray
-from lidar_object_detection_ros2.msg import Pose2D, Object, ObjectsArray, ScanClusters
+from lidar_object_detection_ros2.msg import Object, ObjectsArray
 
 import numpy as np
 from sklearn.cluster import DBSCAN
 from scipy.spatial.transform import Rotation as R
 from scipy.optimize import linear_sum_assignment
+
+from kalman_tracker import KalmanTracker
 
 class LidarObjectDetectionNode(Node):
 
@@ -57,12 +60,21 @@ class LidarObjectDetectionNode(Node):
         self.declare_parameter("max_l", 1.0)
         self.max_l = self.get_parameter('max_l').get_parameter_value().double_value
 
+        ## Kalman Filter
+        self.declare_parameter("use_kalman_filter", True)
+        self.use_kf = self.get_parameter("use_kalman_filter").get_parameter_value().bool_value
+        self.declare_parameter("kf_q_std", 0.05)
+        self.kf_q_std = self.get_parameter("kf_q_std").get_parameter_value().double_value
+        self.declare_parameter("kf_r_std", 0.1)
+        self.kf_r_std = self.get_parameter("kf_r_std").get_parameter_value().double_value
+        self.update_dt = update_rate
+
         ## Variables
         self.ranges = []
         self.dbscan = DBSCAN(eps=dbscan_esp, min_samples=dbscan_min_samples)
 
         ## Cluster asociation
-        self.tracked_objects = {}  # {id: {"corner": [x, y], "age": 0}}
+        self.tracked_objects = {}  # {id: {"corner": [x, y], "kf": KalmanTracker, "age": 0}}
         self.next_id = 0
         self.max_disappeared = 6   # Slightly higher to handle noise
         self.max_distance = 0.8    # Max distance the corner can move between scans
@@ -75,7 +87,6 @@ class LidarObjectDetectionNode(Node):
         self.create_subscription(LaserScan, "scan", self.scan_callback, 10)
 
         ## Publishers
-        self.clusters_publisher = self.create_publisher(ScanClusters, "lod_clusters", 10)
         self.objects_publisher = self.create_publisher(ObjectsArray, "lod_objects", 10)
         self.marker_publisher = self.create_publisher(MarkerArray, "lod_markers", 10)
 
@@ -92,12 +103,6 @@ class LidarObjectDetectionNode(Node):
         
         current_lidar_angle = 0
         points = []
-
-        clusters = ScanClusters()
-        clusters.header.frame_id = self.frame_id
-        clusters.header.stamp = self.get_clock().now().to_msg()
-        clusters.points = []
-        clusters.labels = []
 
         try:
             # Add a timeout (duration) to wait for the transform to become available
@@ -129,7 +134,6 @@ class LidarObjectDetectionNode(Node):
                 point = Pose2D()
                 point.x = point_x
                 point.y = point_y
-                clusters.points.append(point)
                 points.append([point.x, point.y])
             
             current_lidar_angle += self.lidar_ang_res
@@ -140,8 +144,6 @@ class LidarObjectDetectionNode(Node):
             
             ## Clustering
             labels = self.dbscan.fit_predict(lidar_data)
-         
-            clusters.labels = labels.tolist()
 
             unique_labels = set(labels)
             core_samples_mask = np.zeros_like(labels, dtype=bool)
@@ -172,7 +174,7 @@ class LidarObjectDetectionNode(Node):
                         obj.id = int(l)
                         obj.l_shape.c1.x = float(c1[0])
                         obj.l_shape.c1.y = float(c1[1])
-                        obj.l_shape.theta = float(theta)
+                        obj.l_shape.c1.theta = float(theta)
                         obj.l_shape.l1 = float(l1)
                         obj.l_shape.l2 = float(l2)
                         obj.pose.x = float(x_cent)
@@ -182,7 +184,6 @@ class LidarObjectDetectionNode(Node):
 
             objects.objects = self._associate_clusters(objects.objects)
 
-            self.clusters_publisher.publish(clusters)
             self.objects_publisher.publish(objects)
 
             if len(objects.objects) > 0:
@@ -295,6 +296,7 @@ class LidarObjectDetectionNode(Node):
         return r.as_quat()
     
     def _get_marker_array(self, objects_msg):
+        
         marker_array = MarkerArray()
         
         for obj in objects_msg.objects:
@@ -312,7 +314,7 @@ class LidarObjectDetectionNode(Node):
             bbox_marker.pose.position.z = 0.1  # Slightly above ground
             
             # Orientation using our utility
-            q = self._get_quaternion_from_theta(obj.l_shape.theta)
+            q = self._get_quaternion_from_theta(obj.l_shape.c1.theta)
             bbox_marker.pose.orientation.x = q[0]
             bbox_marker.pose.orientation.y = q[1]
             bbox_marker.pose.orientation.z = q[2]
@@ -354,66 +356,127 @@ class LidarObjectDetectionNode(Node):
             
             text_marker.lifetime = rclpy.duration.Duration(seconds=0.2).to_msg()
             marker_array.markers.append(text_marker)
+
+            # 3. Velocity Arrow (Only if KF is on and object is moving)
+            speed = np.hypot(obj.twist.linear.x, obj.twist.linear.y)
+            if self.use_kf and speed > 0.1: # 0.1 m/s threshold
+                arrow_marker = Marker()
+                arrow_marker.header = objects_msg.header
+                arrow_marker.ns = "velocity_arrows"
+                arrow_marker.id = obj.id
+                arrow_marker.type = Marker.ARROW
+                arrow_marker.action = Marker.ADD
+                
+                # Start arrow at object center
+                arrow_marker.pose.position.x = obj.pose.x
+                arrow_marker.pose.position.y = obj.pose.y
+                arrow_marker.pose.position.z = 0.1
+                
+                # Direction of the arrow
+                vel_yaw = np.arctan2(obj.twist.linear.y, obj.twist.linear.x)
+                q_vel = self._get_quaternion_from_theta(vel_yaw)
+                arrow_marker.pose.orientation.x = q_vel[0]
+                arrow_marker.pose.orientation.y = q_vel[1]
+                arrow_marker.pose.orientation.z = q_vel[2]
+                arrow_marker.pose.orientation.w = q_vel[3]
+                
+                # Scale length based on speed
+                arrow_marker.scale.x = speed * 0.5  # Length of arrow
+                arrow_marker.scale.y = 0.05         # Width
+                arrow_marker.scale.z = 0.05         # Height
+                
+                arrow_marker.color.r = 1.0
+                arrow_marker.color.g = 1.0
+                arrow_marker.color.b = 0.0  # Yellow arrows
+                arrow_marker.color.a = 1.0
+                
+                arrow_marker.lifetime = rclpy.duration.Duration(seconds=0.2).to_msg()
+                marker_array.markers.append(arrow_marker)
             
         return marker_array
     
     def _associate_clusters(self, current_objects):
+
+        # 1. Prediction step for all existing filters
+        if self.use_kf:
+            for tid in self.tracked_objects:
+                self.tracked_objects[tid]["kf"].predict()
+
         if not current_objects:
-            # Increment age for all tracked objects if no new detections
             for tid in list(self.tracked_objects.keys()):
                 self.tracked_objects[tid]["age"] += 1
                 if self.tracked_objects[tid]["age"] > self.max_disappeared:
                     del self.tracked_objects[tid]
             return current_objects
 
-        # Extract new corners
         new_corners = np.array([[obj.l_shape.c1.x, obj.l_shape.c1.y] for obj in current_objects])
-        
         tracked_ids = list(self.tracked_objects.keys())
+        
         if not tracked_ids:
-            # Register all as new
             for i, obj in enumerate(current_objects):
-                obj.id = self._register_object(new_corners[i])
+                obj.id = self._register_object(obj) # Pass the whole object now
             return current_objects
 
         tracked_corners = np.array([self.tracked_objects[tid]["corner"] for tid in tracked_ids])
-
-        # Distance matrix between old corners and new corners
         dist_matrix = np.linalg.norm(tracked_corners[:, np.newaxis] - new_corners, axis=2)
-
-        # Hungarian Algorithm for optimal assignment
         row_ind, col_ind = linear_sum_assignment(dist_matrix)
 
         assigned_new_indices = set()
         assigned_track_indices = set()
 
         for r, c in zip(row_ind, col_ind):
-            # Only associate if the corner hasn't jumped too far
             if dist_matrix[r, c] < self.max_distance:
                 tid = tracked_ids[r]
-                current_objects[c].id = tid
+                obj = current_objects[c]
+                obj.id = tid
+                
+                # Update Tracker State
                 self.tracked_objects[tid]["corner"] = new_corners[c]
                 self.tracked_objects[tid]["age"] = 0
+                
+                # 2. Kalman Update (Centroid & Theta)
+                if self.use_kf:
+                    measurement = np.array([obj.pose.x, obj.pose.y, obj.l_shape.c1.theta])
+                    self.tracked_objects[tid]["kf"].update(measurement)
+                    
+                    # Overwrite pose and fill twist from KF state [x, y, theta, vx, vy, w]
+                    kf_state = self.tracked_objects[tid]["kf"].x
+                    obj.pose.x = kf_state[0]
+                    obj.pose.y = kf_state[1]
+                    obj.l_shape.c1.theta = kf_state[2]
+                    obj.twist.linear.x = kf_state[3]
+                    obj.twist.linear.y = kf_state[4]
+                    obj.twist.angular.z = kf_state[5]
+
                 assigned_track_indices.add(r)
                 assigned_new_indices.add(c)
 
-        # Clean up lost tracks
-        for r, tid in enumerate(tracked_ids):
+        for r in range(len(tracked_ids)):
             if r not in assigned_track_indices:
+                tid = tracked_ids[r]
                 self.tracked_objects[tid]["age"] += 1
                 if self.tracked_objects[tid]["age"] > self.max_disappeared:
                     del self.tracked_objects[tid]
 
-        # Register brand new objects
         for c in range(len(new_corners)):
             if c not in assigned_new_indices:
-                current_objects[c].id = self._register_object(new_corners[c])
+                current_objects[c].id = self._register_object(current_objects[c])
 
         return current_objects
 
-    def _register_object(self, corner):
+    def _register_object(self, obj):
+
         new_id = self.next_id
-        self.tracked_objects[new_id] = {"corner": corner, "age": 0}
+        
+        # Initialize Kalman Filter with [x_center, y_center, theta]
+        initial_state = [obj.pose.x, obj.pose.y, obj.l_shape.c1.theta]
+        kf = KalmanTracker(initial_state, self.update_dt, self.kf_q_std, self.kf_r_std)
+        
+        self.tracked_objects[new_id] = {
+            "corner": [obj.l_shape.c1.x, obj.l_shape.c1.y], 
+            "kf": kf,
+            "age": 0
+        }
         self.next_id += 1
         return new_id
 

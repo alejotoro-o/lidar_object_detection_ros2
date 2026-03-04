@@ -21,16 +21,15 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/Pose2D.msg"
   "msg/LShape.msg"
   "msg/Object.msg"
   "msg/ObjectsArray.msg"
-  "msg/ScanClusters.msg"
   DEPENDENCIES std_msgs geometry_msgs sensor_msgs visualization_msgs
 )
 
 install(PROGRAMS
   src/lidar_object_detection.py
+  src/kalman_tracker.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY

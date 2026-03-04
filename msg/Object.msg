@@ -1,3 +1,4 @@
 int32 id
 LShape l_shape
-Pose2D pose
+geometry_msgs/Pose2D pose
+geometry_msgs/Twist twist
