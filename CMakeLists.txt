@@ -24,7 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/LShape.msg"
   "msg/Object.msg"
   "msg/ObjectsArray.msg"
-  DEPENDENCIES std_msgs geometry_msgs sensor_msgs visualization_msgs
+  DEPENDENCIES std_msgs geometry_msgs
 )
 
 install(PROGRAMS

@@ -20,8 +20,54 @@ from scipy.optimize import linear_sum_assignment
 from kalman_tracker import KalmanTracker
 
 class LidarObjectDetectionNode(Node):
+    """
+    A ROS 2 node that detects, clusters, and tracks L-shaped objects from LiDAR scans.
+    
+    This node processes raw LaserScan data to identify clusters using DBSCAN, 
+    fits L-shapes to those clusters to determine orientation and size, and 
+    maintains object identity over time using a Kalman Filter-based tracker.
+    """
 
     def __init__(self):
+        """
+        Initializes the LidarObjectDetectionNode, sets up communication, and declares ROS 2 parameters.
+
+        Available Parameters:
+            --- Clustering (DBSCAN) ---
+            dbscan_eps (float): The maximum distance between two samples for one to be considered 
+                as in the neighborhood of the other.
+            dbscan_min_samples (int): The number of samples in a neighborhood for a point 
+                to be considered as a core point.
+
+            --- Coordinate Frames & Transformation ---
+            frame_id (string): The target reference frame for object tracking (e.g., 'map' or 'odom').
+            lidar_frame_id (string): The source frame of the LiDAR sensor (default: 'laser_link').
+            lidar_angular_resolution (float): The angular step between LiDAR beams in degrees.
+            flip_x_axis (bool): Whether to invert the X-axis coordinate during point projection.
+            flip_y_axis (bool): Whether to invert the Y-axis coordinate during point projection.
+
+            --- Object Filtering & Clipping ---
+            update_rate (float): The frequency (seconds) at which the detection loop runs.
+            min_l / max_l (float): The minimum and maximum allowable side lengths for a fitted L-shape.
+            min_range / max_range (float): Radial distance bounds to clip incoming LiDAR points.
+
+            --- Kalman Filter (KF) ---
+            use_kalman_filter (bool): Enables or disables Kalman Filter-based state estimation.
+            kf_q_std (float): Process noise covariance multiplier.
+            kf_r_std (float): Measurement noise covariance multiplier.
+
+            --- Tracking & Association ---
+            max_disappeared (int): Number of frames a tracked object can remain missing before deletion.
+            max_association_distance (float): Max distance (meters) allowed to associate a new detection 
+                to an existing track.
+
+            --- Visualization (RViz) ---
+            publish_markers (bool): Whether to publish MarkerArray messages for RViz.
+            color_bbox (float list): RGBA values [0.0 - 1.0] for the bounding box markers.
+            color_text (float list): RGBA values [0.0 - 1.0] for the object ID labels.
+            color_arrow (float list): RGBA values [0.0 - 1.0] for the velocity vector arrows.
+            min_velocity_show (float): Speed threshold (m/s) required to display a velocity arrow.
+        """
 
         super().__init__('lidar_object_detection')
 
@@ -60,6 +106,13 @@ class LidarObjectDetectionNode(Node):
         self.declare_parameter("max_l", 1.0)
         self.max_l = self.get_parameter('max_l').get_parameter_value().double_value
 
+        # Lidar Range Clipping Parameters
+        self.declare_parameter("min_range", 0.1) # Ignore anything closer than 10cm
+        self.min_range = self.get_parameter("min_range").get_parameter_value().double_value
+
+        self.declare_parameter("max_range", 8.0) # Ignore anything further than 8m
+        self.max_range = self.get_parameter("max_range").get_parameter_value().double_value
+
         ## Kalman Filter
         self.declare_parameter("use_kalman_filter", True)
         self.use_kf = self.get_parameter("use_kalman_filter").get_parameter_value().bool_value
@@ -69,15 +122,32 @@ class LidarObjectDetectionNode(Node):
         self.kf_r_std = self.get_parameter("kf_r_std").get_parameter_value().double_value
         self.update_dt = update_rate
 
+        ## RViz Visualization
+        self.declare_parameter("publish_markers", True)
+        self.should_publish_markers = self.get_parameter("publish_markers").value
+        # Color Parameters [R, G, B, A]
+        self.declare_parameter("color_bbox", [0.0, 1.0, 0.0, 0.5])  # Green
+        self.declare_parameter("color_text", [1.0, 1.0, 1.0, 1.0])  # White
+        self.declare_parameter("color_arrow", [1.0, 1.0, 0.0, 1.0]) # Yellow
+        # Get colors as a dictionary or specific variables
+        self.c_bbox = self.get_parameter("color_bbox").value
+        self.c_text = self.get_parameter("color_text").value
+        self.c_arrow = self.get_parameter("color_arrow").value
+        # Arrow Threshold
+        self.declare_parameter("min_velocity_show", 0.01)
+        self.min_vel_arrow = self.get_parameter("min_velocity_show").value
+
         ## Variables
         self.ranges = []
         self.dbscan = DBSCAN(eps=dbscan_esp, min_samples=dbscan_min_samples)
 
         ## Cluster asociation
         self.tracked_objects = {}  # {id: {"corner": [x, y], "kf": KalmanTracker, "age": 0}}
-        self.next_id = 0
-        self.max_disappeared = 6   # Slightly higher to handle noise
-        self.max_distance = 0.8    # Max distance the corner can move between scans
+        self.next_id = 0  
+        self.declare_parameter("max_disappeared", 6) # Slightly higher to handle noise
+        self.max_disappeared = self.get_parameter("max_disappeared").value
+        self.declare_parameter("max_association_distance", 0.8) # Max distance the corner can move between scans
+        self.max_distance = self.get_parameter("max_association_distance").value
 
         ## TF Listener
         self.tf_buffer = Buffer()
@@ -95,11 +165,21 @@ class LidarObjectDetectionNode(Node):
         self.scan_time = rclpy.time.Time()
         
     def scan_callback(self, scan_msg):
+        """
+        Callback for the 'scan' topic. Stores the latest LiDAR ranges and timestamp.
+
+        Args:
+            scan_msg (LaserScan): The incoming 2D LiDAR scan message.
+        """
         
         self.scan_time = rclpy.time.Time(seconds=scan_msg.header.stamp.sec, nanoseconds=scan_msg.header.stamp.nanosec)
         self.ranges = scan_msg.ranges
 
     def on_timer(self):
+        """
+        Main processing loop triggered by a timer. Performs coordinate transforms, 
+        point clipping, clustering, L-shape fitting, and tracking.
+        """
         
         current_lidar_angle = 0
         points = []
@@ -126,15 +206,13 @@ class LidarObjectDetectionNode(Node):
 
         for range in self.ranges:
 
-            if range != float("+inf"):
+            # Check if the measurement is within our valid clipping window
+            if self.min_range < range < self.max_range:
                 
-                point_x = t.transform.translation.x + self.flip_x_axis*range*np.cos(theta_r - current_lidar_angle)
-                point_y = t.transform.translation.y + self.flip_y_axis*range*np.sin(theta_r - current_lidar_angle)
+                point_x = t.transform.translation.x + self.flip_x_axis * range * np.cos(theta_r - current_lidar_angle)
+                point_y = t.transform.translation.y + self.flip_y_axis * range * np.sin(theta_r - current_lidar_angle)
 
-                point = Pose2D()
-                point.x = point_x
-                point.y = point_y
-                points.append([point.x, point.y])
+                points.append([point_x, point_y])
             
             current_lidar_angle += self.lidar_ang_res
 
@@ -186,11 +264,24 @@ class LidarObjectDetectionNode(Node):
 
             self.objects_publisher.publish(objects)
 
-            if len(objects.objects) > 0:
+            if self.should_publish_markers and len(objects.objects) > 0:
                 marker_array = self._get_marker_array(objects)
                 self.marker_publisher.publish(marker_array)
 
     def variance_criterion(self, C1, C2):
+        """
+        Calculates the variance-based quality metric for an L-shape fit.
+        
+        This metric is used to determine how well a specific rotation angle 
+        aligns the cluster points with the axes of a potential rectangle.
+
+        Args:
+            C1 (np.array): Projection of points on the first primary axis.
+            C2 (np.array): Projection of points on the second primary axis.
+
+        Returns:
+            float: The gamma value representing the goodness of fit (higher is better).
+        """
 
         c1_max = np.max(C1)
         c1_min = np.min(C1)
@@ -219,6 +310,18 @@ class LidarObjectDetectionNode(Node):
         return gamma
     
     def cal_l_shape(self, points):
+        """
+        Finds the optimal L-shape (rectangle) bounding box for a set of points.
+        
+        Iterates through possible orientations to find the angle that maximizes 
+        the variance criterion, then calculates the corner and dimensions.
+
+        Args:
+            points (np.array): An array of (x, y) coordinates for a single cluster.
+
+        Returns:
+            tuple: A tuple containing ((x_corner, y_corner), theta, length1, length2).
+        """
 
         Q = []
         angle_step = 0.0174533 ## = 1 deg
@@ -279,24 +382,48 @@ class LidarObjectDetectionNode(Node):
     def _get_theta_from_quaternion(self, x, y, z, w):
         """
         Extracts the yaw (rotation around Z-axis) from a 3D quaternion.
-        Used for processing TF transforms.
+
+        Args:
+            x, y, z, w (float): Quaternion components.
+
+        Returns:
+            float: The yaw angle in radians.
         """
+
         r = R.from_quat([x, y, z, w])
         # The last element of the rotvec is the rotation around the Z axis
         return r.as_rotvec()[-1]
 
     def _get_quaternion_from_theta(self, theta):
         """
-        Converts a 2D yaw angle (theta) into a 4D quaternion [x, y, z, w].
-        Used for publishing RViz Markers.
+        Converts a 2D yaw angle into a 4D quaternion [x, y, z, w].
+
+        Args:
+            theta (float): The yaw angle in radians.
+
+        Returns:
+            np.array: A 4-element array representing the quaternion.
         """
+
         # Create rotation around Z-axis
         r = R.from_rotvec([0.0, 0.0, float(theta)])
 
         return r.as_quat()
     
     def _get_marker_array(self, objects_msg):
+        """
+        Creates a MarkerArray for RViz visualization.
         
+        Includes bounding boxes (CUBEs), object ID labels (TEXT), and 
+        velocity vectors (ARROWS) if Kalman Filtering is active.
+
+        Args:
+            objects_msg (ObjectsArray): The custom message containing detected objects.
+
+        Returns:
+            MarkerArray: A collection of markers formatted for RViz.
+        """
+
         marker_array = MarkerArray()
         
         for obj in objects_msg.objects:
@@ -325,11 +452,8 @@ class LidarObjectDetectionNode(Node):
             bbox_marker.scale.y = obj.l_shape.l2
             bbox_marker.scale.z = 0.2 # Thickness of the box
             
-            # Color (Semi-transparent green)
-            bbox_marker.color.r = 0.0
-            bbox_marker.color.g = 1.0
-            bbox_marker.color.b = 0.0
-            bbox_marker.color.a = 0.5
+            # Color
+            bbox_marker.color.r, bbox_marker.color.g, bbox_marker.color.b, bbox_marker.color.a = self.c_bbox
             
             bbox_marker.lifetime = rclpy.duration.Duration(seconds=0.2).to_msg()
             marker_array.markers.append(bbox_marker)
@@ -349,17 +473,14 @@ class LidarObjectDetectionNode(Node):
             text_marker.scale.z = 0.2 # Text height
             text_marker.text = f"ID: {obj.id}"
             
-            text_marker.color.r = 1.0
-            text_marker.color.g = 1.0
-            text_marker.color.b = 1.0
-            text_marker.color.a = 1.0
+            text_marker.color.r, text_marker.color.g, text_marker.color.b, text_marker.color.a = self.c_text
             
             text_marker.lifetime = rclpy.duration.Duration(seconds=0.2).to_msg()
             marker_array.markers.append(text_marker)
 
             # 3. Velocity Arrow (Only if KF is on and object is moving)
             speed = np.hypot(obj.twist.linear.x, obj.twist.linear.y)
-            if self.use_kf and speed > 0.1: # 0.1 m/s threshold
+            if self.use_kf and speed > self.min_vel_arrow:
                 arrow_marker = Marker()
                 arrow_marker.header = objects_msg.header
                 arrow_marker.ns = "velocity_arrows"
@@ -385,10 +506,7 @@ class LidarObjectDetectionNode(Node):
                 arrow_marker.scale.y = 0.05         # Width
                 arrow_marker.scale.z = 0.05         # Height
                 
-                arrow_marker.color.r = 1.0
-                arrow_marker.color.g = 1.0
-                arrow_marker.color.b = 0.0  # Yellow arrows
-                arrow_marker.color.a = 1.0
+                arrow_marker.color.r, arrow_marker.color.g, arrow_marker.color.b, arrow_marker.color.a = self.c_arrow
                 
                 arrow_marker.lifetime = rclpy.duration.Duration(seconds=0.2).to_msg()
                 marker_array.markers.append(arrow_marker)
@@ -396,6 +514,19 @@ class LidarObjectDetectionNode(Node):
         return marker_array
     
     def _associate_clusters(self, current_objects):
+        """
+        Associates newly detected clusters with existing tracked objects.
+        
+        Uses the Hungarian Algorithm (linear_sum_assignment) to minimize 
+        Euclidean distance between predicted and detected corners. Updates 
+        Kalman Filter states and handles object birth/death.
+
+        Args:
+            current_objects (list): List of Object messages from the current scan.
+
+        Returns:
+            list: The list of objects with updated IDs and KF-refined poses/twists.
+        """
 
         # 1. Prediction step for all existing filters
         if self.use_kf:
@@ -465,6 +596,15 @@ class LidarObjectDetectionNode(Node):
         return current_objects
 
     def _register_object(self, obj):
+        """
+        Initializes a new tracker for a previously unseen object.
+
+        Args:
+            obj (Object): The detected object to be registered.
+
+        Returns:
+            int: The unique ID assigned to the new object.
+        """
 
         new_id = self.next_id
         
