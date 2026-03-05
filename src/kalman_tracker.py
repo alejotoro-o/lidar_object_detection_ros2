@@ -46,6 +46,11 @@ class KalmanTracker:
         based on the constant velocity model.
         """
 
+        # Update the velocity-to-position mapping with the current dt
+        self.F[0, 3] = self.dt
+        self.F[1, 4] = self.dt
+        self.F[2, 5] = self.dt
+
         self.x = np.dot(self.F, self.x)
         self.P = np.dot(np.dot(self.F, self.P), self.F.T) + self.Q
         

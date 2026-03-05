@@ -48,6 +48,7 @@ def generate_launch_description():
             # L-shape Detection Parameters
             {"min_l": 0.05},
             {"max_l": 1.0},
+            {"angle_step": 1.0},
             # Lidar Clipping Parameters
             {"min_range": 0.1},
             {"max_range": 8.0},
@@ -81,6 +82,7 @@ def generate_launch_description():
 - **dbscan_min_samples:** (default: `5`) Minimum points to form a cluster.
 - **min_range / max_range:** (default: `0.1` / `8.0`) Radial distance window to consider LIDAR data (meters).
 - **min_l / max_l:** (default: `0.05` / `1.0`) Constraints on the allowable size of the fitted rectangle sides.
+- **angle_step:** (default: `1.0`) The step (in degrees) at which the L-Shape fitting algorithm searches for the correct orientation.
 
 ### Tracking (Kalman Filter)
 - **use_kalman_filter:** (default: `True`) Enable velocity estimation and pose smoothing.

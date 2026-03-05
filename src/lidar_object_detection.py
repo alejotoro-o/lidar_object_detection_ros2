@@ -49,6 +49,7 @@ class LidarObjectDetectionNode(Node):
             --- Object Filtering & Clipping ---
             update_rate (float): The frequency (seconds) at which the detection loop runs.
             min_l / max_l (float): The minimum and maximum allowable side lengths for a fitted L-shape.
+            angle_step (float): The step at which the L-Shape fitting algorithm searches for the correct orientation.
             min_range / max_range (float): Radial distance bounds to clip incoming LiDAR points.
 
             --- Kalman Filter (KF) ---
@@ -106,6 +107,9 @@ class LidarObjectDetectionNode(Node):
         self.declare_parameter("max_l", 1.0)
         self.max_l = self.get_parameter('max_l').get_parameter_value().double_value
 
+        self.declare_parameter("angle_step", 1.0)
+        self.angle_step = self.get_parameter('angle_step').get_parameter_value().double_value
+
         # Lidar Range Clipping Parameters
         self.declare_parameter("min_range", 0.1) # Ignore anything closer than 10cm
         self.min_range = self.get_parameter("min_range").get_parameter_value().double_value
@@ -148,6 +152,7 @@ class LidarObjectDetectionNode(Node):
         self.max_disappeared = self.get_parameter("max_disappeared").value
         self.declare_parameter("max_association_distance", 0.8) # Max distance the corner can move between scans
         self.max_distance = self.get_parameter("max_association_distance").value
+        self.last_scan_timestamp = None
 
         ## TF Listener
         self.tf_buffer = Buffer()
@@ -159,41 +164,35 @@ class LidarObjectDetectionNode(Node):
         ## Publishers
         self.objects_publisher = self.create_publisher(ObjectsArray, "lod_objects", 10)
         self.marker_publisher = self.create_publisher(MarkerArray, "lod_markers", 10)
-
-        ## Timer
-        self.timer = self.create_timer(update_rate, self.on_timer)
-        self.scan_time = rclpy.time.Time()
         
     def scan_callback(self, scan_msg):
         """
-        Callback for the 'scan' topic. Stores the latest LiDAR ranges and timestamp.
+        Callback for the 'scan' topic. Stores the latest LiDAR ranges and timestamp. 
+        Performs main processing loop triggered by a timer. Performs coordinate transforms, 
+        point clipping, clustering, L-shape fitting, and tracking.
 
         Args:
             scan_msg (LaserScan): The incoming 2D LiDAR scan message.
         """
         
-        self.scan_time = rclpy.time.Time(seconds=scan_msg.header.stamp.sec, nanoseconds=scan_msg.header.stamp.nanosec)
         self.ranges = scan_msg.ranges
-
-    def on_timer(self):
-        """
-        Main processing loop triggered by a timer. Performs coordinate transforms, 
-        point clipping, clustering, L-shape fitting, and tracking.
-        """
         
         current_lidar_angle = 0
         points = []
 
         try:
-            # Add a timeout (duration) to wait for the transform to become available
+
             t = self.tf_buffer.lookup_transform(
                 self.frame_id,
                 self.lidar_frame_id,
-                self.scan_time,
-                timeout=rclpy.duration.Duration(seconds=0.1) # <--- Add this
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.1)
             )
+
+            processing_stamp = t.header.stamp
+
         except TransformException as ex:
-            # Changed to warn to avoid spamming info if it's just a slight delay
+
             self.get_logger().warning(f'Could not transform {self.frame_id} to {self.lidar_frame_id}: {ex}')
             return
         
@@ -229,7 +228,7 @@ class LidarObjectDetectionNode(Node):
 
             objects = ObjectsArray()
             objects.header.frame_id = self.frame_id
-            objects.header.stamp = self.get_clock().now().to_msg()
+            objects.header.stamp = processing_stamp
             objects.objects = []
 
             for l in unique_labels:
@@ -260,7 +259,7 @@ class LidarObjectDetectionNode(Node):
 
                         objects.objects.append(obj)
 
-            objects.objects = self._associate_clusters(objects.objects)
+            objects.objects = self._associate_clusters(objects.objects, processing_stamp)
 
             self.objects_publisher.publish(objects)
 
@@ -324,7 +323,7 @@ class LidarObjectDetectionNode(Node):
         """
 
         Q = []
-        angle_step = 0.0174533 ## = 1 deg
+        angle_step = np.deg2rad(self.angle_step)
 
         for search_theta in np.arange(0, np.pi/2 - angle_step, angle_step):
 
@@ -513,7 +512,7 @@ class LidarObjectDetectionNode(Node):
             
         return marker_array
     
-    def _associate_clusters(self, current_objects):
+    def _associate_clusters(self, current_objects, current_stamp):
         """
         Associates newly detected clusters with existing tracked objects.
         
@@ -528,9 +527,24 @@ class LidarObjectDetectionNode(Node):
             list: The list of objects with updated IDs and KF-refined poses/twists.
         """
 
-        # 1. Prediction step for all existing filters
+        # 1. Calculate Dynamic dt
+        current_time_sec = current_stamp.sec + current_stamp.nanosec * 1e-9
+        
+        if self.last_scan_timestamp is None:
+            dt = self.update_dt  # Fallback for the very first frame
+        else:
+            dt = current_time_sec - self.last_scan_timestamp
+        
+        # Safety check: prevent dt=0 or negative time (can happen with sim resets)
+        if dt <= 0:
+            dt = self.update_dt
+
+        self.last_scan_timestamp = current_time_sec
+
+        # 2. Prediction step for all existing filters
         if self.use_kf:
             for tid in self.tracked_objects:
+                self.tracked_objects[tid]["kf"].dt = dt
                 self.tracked_objects[tid]["kf"].predict()
 
         if not current_objects:
@@ -567,10 +581,28 @@ class LidarObjectDetectionNode(Node):
                 
                 # 2. Kalman Update (Centroid & Theta)
                 if self.use_kf:
-                    measurement = np.array([obj.pose.x, obj.pose.y, obj.l_shape.c1.theta])
+                    current_kf_theta = self.tracked_objects[tid]["kf"].x[2]
+                    raw_detected_theta = obj.l_shape.c1.theta
+                    
+                    # 1. Calculate how many 90-degree steps the raw detection is from our track
+                    # This tells us if the L-shape algorithm flipped the axes
+                    rotation_count = round((raw_detected_theta - current_kf_theta) / (np.pi / 2))
+                    
+                    # 2. If it flipped an odd number of times (90 or 270 deg), swap l1 and l2
+                    # This prevents the "stretching" you see on cylinders
+                    if rotation_count % 2 != 0:
+                        obj.l_shape.l1, obj.l_shape.l2 = obj.l_shape.l2, obj.l_shape.l1
+                    
+                    # 3. Calculate the stabilized angle (same as before)
+                    diff = raw_detected_theta - current_kf_theta
+                    diff = (diff + np.pi/4) % (np.pi/2) - np.pi/4
+                    stable_theta = current_kf_theta + diff
+                    
+                    # 4. Update the Filter with the stabilized angle
+                    measurement = np.array([obj.pose.x, obj.pose.y, stable_theta])
                     self.tracked_objects[tid]["kf"].update(measurement)
                     
-                    # Overwrite pose and fill twist from KF state [x, y, theta, vx, vy, w]
+                    # 5. Overwrite message values with KF state
                     kf_state = self.tracked_objects[tid]["kf"].x
                     obj.pose.x = kf_state[0]
                     obj.pose.y = kf_state[1]
