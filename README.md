@@ -2,7 +2,7 @@
 
 This package provides a robust pipeline for detecting and tracking both static and dynamic objects using a 2D LIDAR sensor. It transforms raw laser scans into tracked objects with estimated poses, dimensions, and velocities.
 
-![Lidar Object Detection Demo](images/lidar_object_detection_demo.gif)
+<img src="images/lidar_object_detection_demo.gif" alt="Lidar Object Detection Demo" width="320">
 
 *Lidar Object Detection demo showing clustering, L-shape fitting, and real-time tracking.*
 
