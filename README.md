@@ -18,8 +18,9 @@ This package provides a robust pipeline for detecting and tracking both static a
 1. **Preprocessing:** LiDAR points are clipped by range and transformed into a global or local reference frame.
 2. **Clustering:** Data is grouped using **DBSCAN** (Density-Based Spatial Clustering of Applications with Noise).
 3. **L-Shape Fitting:** Each cluster is fitted with an optimal rectangle side-matching algorithm [1].
-4. **Tracking:** - New detections are associated with existing tracks via the **Hungarian Algorithm**.
-   - A **Kalman Filter** (Constant Velocity Model) predicts and updates the state (pose and twist) of each object.
+4. **Tracking:** 
+    - New detections are associated with existing tracks via the **Hungarian Algorithm**.
+   - A **Kalman Filter** predicts and updates the state (pose, twist, and optionally acceleration) of each object. Supports both a **Constant Velocity** (CV, 6‑state) and a **Constant Acceleration** (CA, 9‑state) motion model, with separate process noise parameters for position, velocity, and acceleration.
 
 ## Usage Example
 
@@ -54,7 +55,10 @@ def generate_launch_description():
             {"max_range": 8.0},
             # Kalman Filter Parameters
             {"use_kalman_filter": True},
-            {"kf_q_std": 0.05},
+            {"kf_model": "ca"},
+            {"kf_q_pos_std": 0.01},
+            {"kf_q_vel_std": 0.5},
+            {"kf_q_acc_std": 0.1},
             {"kf_r_std": 0.1},
             # Visualization Parameters
             {"publish_markers": True},
@@ -86,8 +90,11 @@ def generate_launch_description():
 
 ### Tracking (Kalman Filter)
 - **use_kalman_filter:** (default: `True`) Enable velocity estimation and pose smoothing.
-- **kf_q_std:** (default: `0.05`) Process noise (uncertainty in the motion model).
-- **kf_r_std:** (default: `0.1`) Measurement noise (uncertainty in the LIDAR detections).
+- **kf_model:** (default: `"ca"`) Motion model to use. `"ca"` for Constant Acceleration (9‑state), `"cv"` for Constant Velocity (6‑state).
+- **kf_q_pos_std:** (default: `0.01`) Process noise std for position states $[x, y, \theta]$.
+- **kf_q_vel_std:** (default: `0.5`) Process noise std for velocity states $[v_x, v_y, \omega]$.
+- **kf_q_acc_std:** (default: `0.1`) Process noise std for acceleration states $[a_x, a_y, \alpha]$ (only used with the CA model).
+- **kf_r_std:** (default: `0.1`) Measurement noise (uncertainty in the LiDAR detections).
 - **max_disappeared:** (default: `6`) Number of frames to keep a lost object before deleting its ID.
 - **max_association_distance:** (default: `0.8`) Max distance (meters) to associate a detection with a track.
 
