@@ -17,7 +17,7 @@ from sklearn.cluster import DBSCAN
 from scipy.spatial.transform import Rotation as R
 from scipy.optimize import linear_sum_assignment
 
-from kalman_tracker import KalmanTracker
+from kalman_tracker import KalmanTracker, KalmanTrackerCA
 
 class LidarObjectDetectionNode(Node):
     """
@@ -54,7 +54,7 @@ class LidarObjectDetectionNode(Node):
 
             --- Kalman Filter (KF) ---
             use_kalman_filter (bool): Enables or disables Kalman Filter-based state estimation.
-            kf_q_std (float): Process noise covariance multiplier.
+            kf_q_pos_std (float): Process noise std for position states (x, y, theta).
             kf_r_std (float): Measurement noise covariance multiplier.
 
             --- Tracking & Association ---
@@ -120,10 +120,16 @@ class LidarObjectDetectionNode(Node):
         ## Kalman Filter
         self.declare_parameter("use_kalman_filter", True)
         self.use_kf = self.get_parameter("use_kalman_filter").get_parameter_value().bool_value
-        self.declare_parameter("kf_q_std", 0.05)
-        self.kf_q_std = self.get_parameter("kf_q_std").get_parameter_value().double_value
+        self.declare_parameter("kf_q_pos_std", 0.01)
+        self.kf_q_pos_std = self.get_parameter("kf_q_pos_std").get_parameter_value().double_value
+        self.declare_parameter("kf_q_vel_std", 0.5)
+        self.kf_q_vel_std = self.get_parameter("kf_q_vel_std").get_parameter_value().double_value
         self.declare_parameter("kf_r_std", 0.1)
         self.kf_r_std = self.get_parameter("kf_r_std").get_parameter_value().double_value
+        self.declare_parameter("kf_model", "ca")
+        self.kf_model = self.get_parameter("kf_model").get_parameter_value().string_value
+        self.declare_parameter("kf_q_acc_std", 0.1)
+        self.kf_q_acc_std = self.get_parameter("kf_q_acc_std").get_parameter_value().double_value
         self.update_dt = update_rate
 
         ## RViz Visualization
@@ -585,24 +591,37 @@ class LidarObjectDetectionNode(Node):
                     raw_detected_theta = obj.l_shape.c1.theta
                     
                     # 1. Calculate how many 90-degree steps the raw detection is from our track
-                    # This tells us if the L-shape algorithm flipped the axes
                     rotation_count = round((raw_detected_theta - current_kf_theta) / (np.pi / 2))
                     
                     # 2. If it flipped an odd number of times (90 or 270 deg), swap l1 and l2
-                    # This prevents the "stretching" you see on cylinders
                     if rotation_count % 2 != 0:
                         obj.l_shape.l1, obj.l_shape.l2 = obj.l_shape.l2, obj.l_shape.l1
                     
-                    # 3. Calculate the stabilized angle (same as before)
+                    # 3. Calculate the stabilized angle
                     diff = raw_detected_theta - current_kf_theta
                     diff = (diff + np.pi/4) % (np.pi/2) - np.pi/4
                     stable_theta = current_kf_theta + diff
                     
-                    # 4. Update the Filter with the stabilized angle
+                    # 4. Update the Filter (position + orientation only)
                     measurement = np.array([obj.pose.x, obj.pose.y, stable_theta])
                     self.tracked_objects[tid]["kf"].update(measurement)
                     
-                    # 5. Overwrite message values with KF state
+                    # 5. One-shot FD seed for unobserved velocity (instant convergence)
+                    if not self.tracked_objects[tid].get("seeded", False):
+                        last_raw_time = self.tracked_objects[tid]["last_raw_time"]
+                        if last_raw_time > 0:
+                            dt_seed = current_time_sec - last_raw_time
+                            if dt_seed > 0:
+                                vx_seed = (obj.pose.x - self.tracked_objects[tid]["last_raw_pos"][0]) / dt_seed
+                                vy_seed = (obj.pose.y - self.tracked_objects[tid]["last_raw_pos"][1]) / dt_seed
+                                self.tracked_objects[tid]["kf"].x[3] = vx_seed
+                                self.tracked_objects[tid]["kf"].x[4] = vy_seed
+                        self.tracked_objects[tid]["seeded"] = True
+                    
+                    self.tracked_objects[tid]["last_raw_pos"] = [obj.pose.x, obj.pose.y]
+                    self.tracked_objects[tid]["last_raw_time"] = current_time_sec
+                    
+                    # 6. Read KF state and overwrite message values
                     kf_state = self.tracked_objects[tid]["kf"].x
                     obj.pose.x = kf_state[0]
                     obj.pose.y = kf_state[1]
@@ -642,12 +661,21 @@ class LidarObjectDetectionNode(Node):
         
         # Initialize Kalman Filter with [x_center, y_center, theta]
         initial_state = [obj.pose.x, obj.pose.y, obj.l_shape.c1.theta]
-        kf = KalmanTracker(initial_state, self.update_dt, self.kf_q_std, self.kf_r_std)
+        if self.kf_model == "ca":
+            kf = KalmanTrackerCA(initial_state, self.update_dt,
+                                 self.kf_q_pos_std, self.kf_q_vel_std,
+                                 self.kf_q_acc_std, self.kf_r_std)
+        else:
+            kf = KalmanTracker(initial_state, self.update_dt,
+                               self.kf_q_pos_std, self.kf_q_vel_std, self.kf_r_std)
         
         self.tracked_objects[new_id] = {
             "corner": [obj.l_shape.c1.x, obj.l_shape.c1.y], 
             "kf": kf,
-            "age": 0
+            "age": 0,
+            "seeded": False,
+            "last_raw_pos": [obj.pose.x, obj.pose.y],
+            "last_raw_time": self.last_scan_timestamp or 0,
         }
         self.next_id += 1
         return new_id

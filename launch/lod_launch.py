@@ -21,12 +21,16 @@ def generate_launch_description():
             # L-shape Detection Parameters
             {"min_l": 0.05},
             {"max_l": 1.0},
+            {"angle_step": 1.0},
             # Lidar Clipping Parameters
             {"min_range": 0.1},
             {"max_range": 8.0},
             # Kalman Filter Parameters
             {"use_kalman_filter": True},
-            {"kf_q_std": 0.05},
+            {"kf_model": "ca"},
+            {"kf_q_pos_std": 0.01},
+            {"kf_q_vel_std": 0.5},
+            {"kf_q_acc_std": 0.1},
             {"kf_r_std": 0.1},
             # Visualization Parameters
             {"publish_markers": True},
